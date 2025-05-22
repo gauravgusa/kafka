@@ -1,0 +1,209 @@
+# roles/k8s_services/tasks/main.yml
+# SPDX-License-Identifier: MIT-0
+---
+# tasks file for roles/k8s_services
+
+- name: Create namespaces
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ item }}"
+  loop:
+    - kafka
+    # - cassandra
+    - elasticsearch
+
+
+- name: Create KafkaNodePool for controller+broker (KRaft)
+  kubernetes.core.k8s:
+    state: present
+    namespace: kafka
+    definition:
+      apiVersion: kafka.strimzi.io/v1beta2
+      kind: KafkaNodePool
+      metadata:
+        name: dual-role
+        labels:
+          strimzi.io/cluster: my-cluster
+      spec:
+        replicas: 1
+        roles:
+          - controller
+          - broker
+        storage:
+          type: jbod
+          volumes:
+            - id: 0
+              type: persistent-claim
+              size: 5Gi
+              deleteClaim: false
+
+- name: Deploy KRaft-based Kafka cluster
+  kubernetes.core.k8s:
+    state: present
+    namespace: kafka
+    definition:
+      apiVersion: kafka.strimzi.io/v1beta2
+      kind: Kafka
+      metadata:
+        name: my-cluster
+        annotations:
+          strimzi.io/node-pools: enabled
+          strimzi.io/kraft: enabled
+      spec:
+        kafka:
+          version: 3.9.0
+          metadataVersion: 3.9-IV0
+          listeners:
+            - name: plain
+              port: 9092
+              type: internal
+              tls: false
+            - name: tls
+              port: 9093
+              type: internal
+              tls: true
+          config:
+            offsets.topic.replication.factor: 1
+            transaction.state.log.replication.factor: 1
+            transaction.state.log.min.isr: 1
+            default.replication.factor: 1
+            min.insync.replicas: 1
+        entityOperator:
+          topicOperator: {}
+          userOperator: {}
+
+- name: Wait for Kafka cluster to be ready
+  ansible.builtin.shell: |
+    kubectl wait kafka/my-cluster --for=condition=Ready --timeout=600s -n kafka
+  register: wait_result
+  failed_when: wait_result.rc != 0
+
+- name: Deploy KafkaConnect with custom connector
+  kubernetes.core.k8s:
+    state: present
+    namespace: kafka
+    definition:
+      apiVersion: kafka.strimzi.io/v1beta2
+      kind: KafkaConnect
+      metadata:
+        name: my-connect-cluster
+        annotations:
+          strimzi.io/use-connector-resources: "true"
+      spec:
+        version: 3.9.0
+        replicas: 1
+        bootstrapServers: my-cluster-kafka-bootstrap:9092
+        build:
+          output:
+            type: docker
+            image: ggdocket/my-connect-cluster:latest
+            pushSecret: my-dockerhub-secret
+          plugins:
+            - name: elasticsearch-connector
+              artifacts:
+                - type: zip
+                  url: http://192.168.49.1:8000/confluentinc-kafka-connect-elasticsearch-15.0.0.zip
+        config:
+          group.id: connect-cluster
+          offset.storage.topic: connect-cluster-offsets
+          config.storage.topic: connect-cluster-configs
+          status.storage.topic: connect-cluster-status
+          config.storage.replication.factor: 1
+          offset.storage.replication.factor: 1
+          status.storage.replication.factor: 1
+
+
+
+# - name: Deploy KafkaConnect
+#   kubernetes.core.k8s:
+#     state: present
+#     namespace: kafka
+#     definition:
+#       apiVersion: kafka.strimzi.io/v1beta2
+#       kind: KafkaConnect
+#       metadata:
+#         name: my-connect-cluster
+#         annotations:
+#           strimzi.io/use-connector-resources: "true"
+#       spec:
+#         version: 3.9.0
+#         replicas: 1
+#         bootstrapServers: my-cluster-kafka-bootstrap:9092
+#         image: confluentinc/cp-kafka-connect
+#         config:
+#           group.id: connect-cluster
+#           offset.storage.topic: connect-cluster-offsets
+#           config.storage.topic: connect-cluster-configs
+#           status.storage.topic: connect-cluster-status
+#           config.storage.replication.factor: 1
+#           offset.storage.replication.factor: 1
+#           status.storage.replication.factor: 1
+#           config.providers: file
+#           config.providers.file.class: org.apache.kafka.common.config.provider.FileConfigProvider
+#         build:
+#           output:
+#             type: docker
+#             image: my-connect-cluster-image:latest
+#           plugins:
+#             - name: debezium-mongodb-connector
+#               artifacts:
+#                 - type: zip
+#                   url: https://repo1.maven.org/maven2/io/debezium/debezium-connector-mongodb/2.3.0.Final/debezium-connector-mongodb-2.3.0.Final-plugin.zip
+#             - name: cassandra-connector
+#               artifacts:
+#                 - type: zip
+#                   url: https://repo1.maven.org/maven2/io/confluent/kafka-connect-cassandra/2.2.9/kafka-connect-cassandra-2.2.9.zip
+#             - name: elasticsearch-connector
+#               artifacts:
+#                 - type: zip
+#                   url: https://repo1.maven.org/maven2/io/confluent/kafka-connect-elasticsearch/14.0.6/kafka-connect-elasticsearch-14.0.6.zip
+
+# - name: Deploy Cassandra
+#   kubernetes.core.helm:
+#     name: cassandra
+#     chart_ref: bitnami/cassandra
+#     release_namespace: cassandra
+#     wait: true
+#     timeout: 600s
+#     values:
+#       cluster:
+#         name: cassandra-cluster
+#         size: 1
+#       persistence:
+#         enabled: true
+#         size: 5Gi
+#       resources:
+#         requests:
+#           memory: 1Gi
+#           cpu: 0.5
+#         limits:
+#           memory: 2Gi
+#           cpu: 1
+
+- name: Deploy Elasticsearch
+  kubernetes.core.helm:
+    name: elasticsearch
+    chart_ref: elastic/elasticsearch
+    release_namespace: elasticsearch
+    wait: true
+    timeout: 600s
+    values:
+      replicas: 1
+      minimumMasterNodes: 1
+      resources:
+        requests:
+          cpu: "500m"
+          memory: "1Gi"
+        limits:
+          cpu: "1000m"
+          memory: "2Gi"
+      volumeClaimTemplate:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 5Gi
+
