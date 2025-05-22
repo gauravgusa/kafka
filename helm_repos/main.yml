@@ -1,0 +1,17 @@
+#SPDX-License-Identifier: MIT-0
+---
+# tasks file for roles/helm_repos
+- name: Add Strimzi Kafka Helm repository
+  kubernetes.core.helm_repository:
+    name: strimzi
+    repo_url: https://strimzi.io/charts/
+- name: Add Bitnami Helm repository
+  kubernetes.core.helm_repository:
+    name: bitnami
+    repo_url: https://charts.bitnami.com/bitnami
+- name: Add Elastic Helm repository
+  kubernetes.core.helm_repository:
+    name: elastic
+    repo_url: https://helm.elastic.co
+- name: Update Helm repositories
+  command: helm repo update
