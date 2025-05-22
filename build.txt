@@ -1,0 +1,21 @@
+minikube stop
+minikube delete
+
+
+minikube start --cpus=4 --memory=8192 --driver=docker
+kubectl create namespace kafka
+kubectl create -f 'https://strimzi.io/install/latest?namespace=kafka' -n kafka
+kubectl get crd kafkanodepools.kafka.strimzi.io
+
+
+kubectl delete secret my-dockerhub-secret -n kafka
+kubectl create secret docker-registry my-dockerhub-secret \
+  --docker-server=https://index.docker.io/v1/ \
+  --docker-username=myaccount \
+  --docker-password=dckr_72JhY \
+  --docker-email=local@gmail.com \
+  -n kafka
+
+kubectl get secret my-dockerhub-secret -n kafka
+ansible-playbook -i inventory/hosts playbooks/setup_k8s.yml
+
